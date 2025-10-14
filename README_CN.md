@@ -245,7 +245,7 @@ ponghub 现已支持强大的参数化配置功能，允许在配置文件中使
 
 ```yaml
 services:
-  - name: "Parameterized Service"
+  - name: "参数化服务"
     endpoints:
         - url: "https://api.example.com/data?date={{%Y-%m-%d}}&rand={{rand(1,100)}}"
         - url: "https://api.example.com/submit"
@@ -325,15 +325,16 @@ email:
 webhook:
   url: "https://your-webhook-endpoint.com/notify"  # 留空则从环境变量读取
   method: "POST"                        # HTTP方法（可选，默认POST）
-  headers:                              # 自定义请求头（可选）
+  headers:                              # 自定义请求头（可选，支持特殊参数）
     Content-Type: "application/json"
-    Authorization: "Bearer your_token"
+    Authorization: "Bearer {{env(API_TOKEN)}}"  # 支持特殊参数
+    X-Request-ID: "{{uuid}}"           # 使用特殊参数的动态请求ID
   
-  # 认证选项
+  # 认证选项（所有字段均支持特殊参数）
   auth_type: "bearer"                   # 认证类型：bearer, basic, apikey（可选）
-  auth_token: "your_token"              # Bearer令牌或API密钥（可选）
-  auth_username: "user"                 # 基本认证用户名（可选）
-  auth_password: "pass"                 # 基本认证密码（可选）
+  auth_token: "{{env(WEBHOOK_TOKEN)}}"  # 使用环境变量的Bearer令牌（可选）
+  auth_username: "user-{{rand(1000,9999)}}"  # 带动态后缀的基本认证用户名（可选）
+  auth_password: "{{env(AUTH_PASSWORD)}}"     # 来自环境变量的基本认证密码（可选）
   auth_header: "X-API-Key"              # API密钥自定义头部名称（可选）
   
   # 请求配置
@@ -341,44 +342,68 @@ webhook:
   retries: 3                            # 重试次数（可选，默认0）
   skip_tls_verify: false                # 跳过TLS证书验证（可选）
   
-  # 载荷自定义
+  # 高级载荷自定义，支持特殊参数
   custom_payload:                       # 自定义请求载荷（可选）
-    template: '{"alert": "{{.Title}}", "details": "{{.Message}}"}'
+    template: |
+      {
+        "alert": "{{.Title}}",
+        "details": "{{.Message}}",
+        "timestamp": "{{%Y-%m-%d %H:%M:%S}}",
+        "request_id": "{{uuid}}",
+        "environment": "{{env(ENVIRONMENT)}}",
+        "random_id": "{{rand(10000,99999)}}"
+      }
     content_type: "application/json"    # 载荷内容类型（可选）
-    fields:                             # 额外静态字段（可选）
-      environment: "production"
-      service: "ponghub"
+    fields:                             # 支持特殊参数的额外字段（可选）
+      environment: "prod-{{rand(100,999)}}"
+      session_id: "{{uuid_short}}"
+      build_number: "{{env(BUILD_NUMBER)}}"
+      timestamp_unix: "{{%s}}"
     include_title: true                 # 在额外字段中包含标题（可选）
     include_message: true               # 在额外字段中包含消息（可选）
     title_field: "alert_title"          # 标题自定义字段名（可选）
     message_field: "alert_message"      # 消息自定义字段名（可选）
-  
-  # 预设格式（作为custom_payload的替代）
-  format: "slack"                       # 预设格式：slack, discord, teams, mattermost（可选）
-  
-  # 直接模板（DEPRECATED，建议使用custom_payload）
-  template: '{"title": "{{.title}}", "message": "{{.message}}"}'  # 直接模板（可选）
 ```
 
-模板使用Go模板语法，支持访问 `{{.Title}}`、`{{.Message}}` 等变量：
+**Webhook中的特殊参数支持：**
+
+Webhook配置现在全面支持在以下字段中使用特殊参数：
+
+- **URL**: `url: "https://hooks.example.com/{{env(HOOK_ID)}}"`
+- **请求头**: 所有请求头值都可以使用特殊参数
+- **认证信息**: 所有认证字段均支持动态值
+- **模板**: 同时支持Go模板语法（`{{.Title}}`）和特殊参数（`{{uuid}}`）
+- **自定义字段**: 所有自定义载荷字段均支持特殊参数
+
+**模板语法兼容性：**
+
+Webhook模板系统无缝支持两种语法：
+
+- **Go模板语法**: `{{.Title}}`、`{{.Message}}` - 访问通知数据
+- **特殊参数**: `{{uuid}}`、`{{%Y-%m-%d}}`、`{{env(VAR)}}` - 动态值
+
+结合两种语法的示例：
 
 ```yaml
 custom_payload:
   template: |
     {
-      "alert": "{{.Title}}",
-      "details": "{{.Message}}",
-      "metadata": {
-        "severity": "high"
-      }
+      "service_alert": "{{.Title}}",
+      "description": "{{.Message}}",
+      "alert_id": "{{uuid_short}}",
+      "timestamp": "{{%Y-%m-%d %H:%M:%S}}",
+      "environment": "{{env(DEPLOY_ENV)}}",
+      "correlation_id": "{{rand_str(12)}}"
     }
   fields:
-    environment: "production"
+    datacenter: "{{env(DATACENTER)}}"
+    version: "{{env(APP_VERSION)}}"
 ```
 
 所需环境变量：
 
 - `WEBHOOK_URL` - 自定义Webhook URL（如果`url`字段为空）
+- 特殊参数中引用的任何环境变量（如：`API_TOKEN`、`ENVIRONMENT`）
 
 </div>
 </details>
@@ -403,7 +428,6 @@ notifications:
   enabled: true
   methods:
     - email
-    - webhook
   
   email:
     smtp_host: "smtp.gmail.com"

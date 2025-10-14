@@ -327,13 +327,14 @@ webhook:
   method: "POST"                        # HTTP method (optional, default POST)
   headers:                              # Custom request headers (optional)
     Content-Type: "application/json"
-    Authorization: "Bearer your_token"
+    Authorization: "Bearer {{env(API_TOKEN)}}"  # Supports Special Parameters
+    X-Request-ID: "{{uuid}}"           # Dynamic request ID using Special Parameters
   
-  # Authentication options
+  # Authentication options (all fields support Special Parameters)
   auth_type: "bearer"                   # Authentication type: bearer, basic, apikey (optional)
-  auth_token: "your_token"              # Bearer token or API key (optional)
-  auth_username: "user"                 # Basic auth username (optional)
-  auth_password: "pass"                 # Basic auth password (optional)
+  auth_token: "{{env(WEBHOOK_TOKEN)}}"  # Bearer token with environment variable (optional)
+  auth_username: "user-{{rand(1000,9999)}}"  # Basic auth username with dynamic suffix (optional)
+  auth_password: "{{env(AUTH_PASSWORD)}}"     # Basic auth password from environment (optional)
   auth_header: "X-API-Key"              # Custom header name for API key (optional)
   
   # Request configuration
@@ -341,44 +342,68 @@ webhook:
   retries: 3                            # Number of retry attempts (optional, default 0)
   skip_tls_verify: false                # Skip TLS certificate verification (optional)
   
-  # Payload customization
+  # Advanced payload customization with Special Parameters support
   custom_payload:                       # Custom request payload (optional)
-    template: '{"alert": "{{.Title}}", "details": "{{.Message}}"}'
+    template: |
+      {
+        "alert": "{{.Title}}",
+        "details": "{{.Message}}",
+        "timestamp": "{{%Y-%m-%d %H:%M:%S}}",
+        "request_id": "{{uuid}}",
+        "environment": "{{env(ENVIRONMENT)}}",
+        "random_id": "{{rand(10000,99999)}}"
+      }
     content_type: "application/json"    # Content type for the payload (optional)
-    fields:                             # Additional static fields (optional)
-      environment: "production"
-      service: "ponghub"
+    fields:                             # Additional fields with Special Parameters support (optional)
+      environment: "prod-{{rand(100,999)}}"
+      session_id: "{{uuid_short}}"
+      build_number: "{{env(BUILD_NUMBER)}}"
+      timestamp_unix: "{{%s}}"
     include_title: true                 # Include title in additional fields (optional)
     include_message: true               # Include message in additional fields (optional)
     title_field: "alert_title"          # Custom field name for title (optional)
     message_field: "alert_message"      # Custom field name for message (optional)
-  
-  # Preset formats (alternative to custom_payload)
-  format: "slack"                       # Preset format: slack, discord, teams, mattermost (optional)
-  
-  # Direct template (DEPRECATED, use custom_payload.template instead)
-  template: '{"title": "{{.title}}", "message": "{{.message}}"}'  # Direct template (optional)
 ```
 
-The template uses Go template syntax and supports accessing variables like `{{.Title}}`, `{{.Message}}`, etc:
+**Special Parameters Support in Webhooks:**
+
+Webhook configurations now fully support Special Parameters in the following fields:
+
+- **URL**: `url: "https://hooks.example.com/{{env(HOOK_ID)}}"`
+- **Headers**: All header values can use Special Parameters
+- **Authentication**: All auth fields support dynamic values
+- **Templates**: Both Go template syntax (`{{.Title}}`) and Special Parameters (`{{uuid}}`) work together
+- **Custom Fields**: All custom payload fields support Special Parameters
+
+**Template Syntax Compatibility:**
+
+The webhook template system supports both syntaxes seamlessly:
+
+- **Go Template Syntax**: `{{.Title}}`, `{{.Message}}` - Access notification data
+- **Special Parameters**: `{{uuid}}`, `{{%Y-%m-%d}}`, `{{env(VAR)}}` - Dynamic values
+
+Example combining both syntaxes:
 
 ```yaml
 custom_payload:
   template: |
     {
-      "alert": "{{.Title}}",
-      "details": "{{.Message}}",
-      "metadata": {
-        "severity": "high"
-      }
+      "service_alert": "{{.Title}}",
+      "description": "{{.Message}}",
+      "alert_id": "{{uuid_short}}",
+      "timestamp": "{{%Y-%m-%d %H:%M:%S}}",
+      "environment": "{{env(DEPLOY_ENV)}}",
+      "correlation_id": "{{rand_str(12)}}"
     }
   fields:
-    environment: "production"
+    datacenter: "{{env(DATACENTER)}}"
+    version: "{{env(APP_VERSION)}}"
 ```
 
 Required environment variables:
 
 - `WEBHOOK_URL` - Custom Webhook URL (if `url` field is empty)
+- Any environment variables referenced in Special Parameters (e.g., `API_TOKEN`, `ENVIRONMENT`)
 
 </div>
 </details>
@@ -403,8 +428,7 @@ notifications:
   enabled: true
   methods:
     - email
-    - webhook
-  
+
   email:
     smtp_host: "smtp.gmail.com"
     smtp_port: 587
@@ -434,3 +458,4 @@ make test
 ## Disclaimer
 
 [PongHub](https://github.com/WCY-dt/ponghub) is for personal learning and research only. We are not responsible for the usage behavior or results of the program. Please do not use it for commercial purposes or illegal activities.
+

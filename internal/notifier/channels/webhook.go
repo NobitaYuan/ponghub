@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
 
+	"github.com/wcy-dt/ponghub/internal/common/params"
 	"github.com/wcy-dt/ponghub/internal/types/structures/configure"
 )
 
@@ -26,6 +28,9 @@ func NewWebhookNotifier(config *configure.WebhookConfig) *WebhookNotifier {
 
 // Send sends a generic webhook notification with enhanced configuration support
 func (w *WebhookNotifier) Send(title, message string) error {
+	// Create parameter resolver for processing Special Parameters
+	resolver := params.NewParameterResolver()
+
 	url := w.config.URL
 	if url == "" {
 		url = os.Getenv("WEBHOOK_URL")
@@ -34,6 +39,9 @@ func (w *WebhookNotifier) Send(title, message string) error {
 	if url == "" {
 		return fmt.Errorf("webhook URL not configured")
 	}
+
+	// Resolve Special Parameters in the URL
+	url = resolver.ResolveParameters(url)
 
 	// Prepare the payload
 	payload, contentType, err := w.buildPayload(title, message)
@@ -47,15 +55,16 @@ func (w *WebhookNotifier) Send(title, message string) error {
 		method = strings.ToUpper(w.config.Method)
 	}
 
-	// Prepare headers
+	// Prepare headers and resolve Special Parameters in header values
 	headers := make(map[string]string)
 	for key, value := range w.config.Headers {
-		headers[key] = value
+		resolvedValue := resolver.ResolveParameters(value)
+		headers[key] = resolvedValue
 	}
 
 	// Set authentication if configured
 	if w.config.AuthType != "" {
-		w.setAuthentication(headers)
+		w.setAuthentication(headers, resolver)
 	}
 
 	// Execute request with retry logic
@@ -64,28 +73,25 @@ func (w *WebhookNotifier) Send(title, message string) error {
 
 // buildPayload constructs the webhook payload based on configuration
 func (w *WebhookNotifier) buildPayload(title, message string) (interface{}, string, error) {
+	// Create parameter resolver for processing Special Parameters
+	resolver := params.NewParameterResolver()
+
+	// Resolve Special Parameters in title and message
+	resolvedTitle := resolver.ResolveParameters(title)
+	resolvedMessage := resolver.ResolveParameters(message)
+
 	data := map[string]interface{}{
-		"title":     title,
-		"message":   message,
-		"Title":     title,   // Add uppercase version for template compatibility
-		"Message":   message, // Add uppercase version for template compatibility
+		"title":     resolvedTitle,
+		"message":   resolvedMessage,
+		"Title":     resolvedTitle,   // Add uppercase version for template compatibility
+		"Message":   resolvedMessage, // Add uppercase version for template compatibility
 		"timestamp": time.Now().Format(time.RFC3339),
 		"service":   "ponghub",
 	}
 
 	// Check for custom payload configuration first
 	if w.config.CustomPayload != nil {
-		return w.buildCustomPayload(data)
-	}
-
-	// Use direct template if configured (for backwards compatibility)
-	if w.config.Template != "" {
-		return w.buildTemplatePayload(data)
-	}
-
-	// Use predefined format if configured
-	if w.config.Format != "" {
-		return w.buildFormattedPayload(data)
+		return w.buildCustomPayload(data, resolver)
 	}
 
 	// Default JSON payload
@@ -93,7 +99,7 @@ func (w *WebhookNotifier) buildPayload(title, message string) (interface{}, stri
 }
 
 // buildCustomPayload builds payload using custom payload configuration
-func (w *WebhookNotifier) buildCustomPayload(data map[string]interface{}) (interface{}, string, error) {
+func (w *WebhookNotifier) buildCustomPayload(data map[string]interface{}, resolver *params.ParameterResolver) (interface{}, string, error) {
 	customPayload := w.config.CustomPayload
 
 	// Create enhanced data with custom fields and field mappings
@@ -104,10 +110,11 @@ func (w *WebhookNotifier) buildCustomPayload(data map[string]interface{}) (inter
 		enhancedData[k] = v
 	}
 
-	// Add custom fields if configured
+	// Add custom fields if configured, resolving Special Parameters
 	if customPayload.Fields != nil {
 		for key, value := range customPayload.Fields {
-			enhancedData[key] = value
+			resolvedValue := resolver.ResolveParameters(value)
+			enhancedData[key] = resolvedValue
 		}
 	}
 
@@ -121,40 +128,8 @@ func (w *WebhookNotifier) buildCustomPayload(data map[string]interface{}) (inter
 
 	// Use custom template if provided
 	if customPayload.Template != "" {
-		// For JSON templates, try structured approach first
-		if strings.Contains(customPayload.Template, `"alert"`) && strings.Contains(customPayload.Template, `"details"`) {
-			// Handle the common case: {"alert": "{{.Title}}", "details": "{{.Message}}", "env": "{{.environment}}", "svc": "{{.service}}"}
-			result := map[string]interface{}{
-				"alert":   enhancedData["Title"],
-				"details": enhancedData["Message"],
-			}
-
-			// Add other fields that might be referenced in the template
-			if strings.Contains(customPayload.Template, `"env"`) {
-				result["env"] = enhancedData["environment"]
-			}
-			if strings.Contains(customPayload.Template, `"svc"`) {
-				result["svc"] = enhancedData["service"]
-			}
-			// Add any other custom fields from enhancedData that might be in template
-			for key, value := range enhancedData {
-				if key != "Title" && key != "Message" && key != "title" && key != "message" &&
-					key != "timestamp" && key != "service" && key != "environment" {
-					if strings.Contains(customPayload.Template, fmt.Sprintf(`"%s"`, key)) {
-						result[key] = value
-					}
-				}
-			}
-
-			contentType := "application/json"
-			if customPayload.ContentType != "" {
-				contentType = customPayload.ContentType
-			}
-			return result, contentType, nil
-		}
-
-		// Fallback to template parsing for other cases
-		return w.buildTemplatePayloadWithData(customPayload.Template, enhancedData, customPayload.ContentType)
+		// Always use template parsing for custom payload templates
+		return w.buildTemplatePayloadWithData(customPayload.Template, enhancedData, customPayload.ContentType, resolver)
 	}
 
 	// Default behavior - return enhanced data
@@ -167,189 +142,147 @@ func (w *WebhookNotifier) buildCustomPayload(data map[string]interface{}) (inter
 }
 
 // buildTemplatePayloadWithData builds payload using a template with provided data and content type
-func (w *WebhookNotifier) buildTemplatePayloadWithData(templateStr string, data map[string]interface{}, contentType string) (interface{}, string, error) {
-	// Create template with JSON escape function
-	tmpl := template.New("webhook").Funcs(template.FuncMap{
-		"jsonEscape": func(s string) string {
-			b, _ := json.Marshal(s)
-			return string(b[1 : len(b)-1]) // Remove surrounding quotes
-		},
-	})
+func (w *WebhookNotifier) buildTemplatePayloadWithData(templateStr string, data map[string]interface{}, contentType string, resolver *params.ParameterResolver) (interface{}, string, error) {
+	// Create a custom resolver that preserves Go template syntax
+	// We need to be careful not to process Go template variables like {{.Title}}
+	resolvedTemplate := w.resolveSpecialParametersOnly(templateStr, resolver)
 
-	tmpl, err := tmpl.Parse(templateStr)
+	// For JSON templates, we need to properly escape string values
+	// Create a new data map with JSON-safe string values
+	templateData := make(map[string]interface{})
+	for k, v := range data {
+		templateData[k] = v
+	}
+
+	// Create template
+	tmpl := template.New("webhook")
+	tmpl, err := tmpl.Parse(resolvedTemplate)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to parse template: %w", err)
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.Execute(&buf, templateData); err != nil {
 		return nil, "", fmt.Errorf("failed to execute template: %w", err)
 	}
 
+	templateResult := buf.String()
+
 	// Try to parse as JSON first
 	var jsonData interface{}
-	if err := json.Unmarshal(buf.Bytes(), &jsonData); err == nil {
+	if err := json.Unmarshal([]byte(templateResult), &jsonData); err != nil {
+		// If JSON parsing fails, it's likely because string values weren't properly escaped
+		// Let's try a different approach - build the JSON structure directly
+		if strings.Contains(resolvedTemplate, "{{.Title}}") && strings.Contains(resolvedTemplate, "{{.Message}}") {
+			// This looks like a JSON template, let's build it properly
+			jsonStruct := make(map[string]interface{})
+
+			// Extract title and message values
+			if title, ok := data["Title"].(string); ok {
+				jsonStruct["alert"] = title
+			}
+			if message, ok := data["Message"].(string); ok {
+				jsonStruct["details"] = message
+			}
+
+			// Add other fields from the template if they exist
+			for key, value := range data {
+				if key != "Title" && key != "Message" && key != "title" && key != "message" {
+					jsonStruct[key] = value
+				}
+			}
+
+			resultContentType := "application/json"
+			if contentType != "" {
+				resultContentType = contentType
+			}
+			return jsonStruct, resultContentType, nil
+		}
+
+		// If not a recognizable JSON template, return as string
+		resultContentType := "text/plain"
+		if contentType != "" {
+			resultContentType = contentType
+		}
+		return templateResult, resultContentType, nil
+	}
+
+	// If template produced valid JSON, merge with any additional fields from data
+	if jsonMap, ok := jsonData.(map[string]interface{}); ok {
+		// Add any fields from data that aren't in the template result
+		for key, value := range data {
+			// Skip the standard template fields but include custom fields
+			if key != "title" && key != "message" && key != "Title" && key != "Message" && key != "timestamp" && key != "service" {
+				if _, exists := jsonMap[key]; !exists {
+					jsonMap[key] = value
+				}
+			}
+		}
 		resultContentType := "application/json"
 		if contentType != "" {
 			resultContentType = contentType
 		}
-		return jsonData, resultContentType, nil
+		return jsonMap, resultContentType, nil
 	}
 
-	// Return as string if not valid JSON
-	resultContentType := "text/plain"
+	resultContentType := "application/json"
 	if contentType != "" {
 		resultContentType = contentType
 	}
-	return buf.String(), resultContentType, nil
+	return jsonData, resultContentType, nil
 }
 
-// buildTemplatePayload builds payload using custom template
-func (w *WebhookNotifier) buildTemplatePayload(data map[string]interface{}) (interface{}, string, error) {
-	// Create template with JSON escape function
-	tmpl := template.New("webhook").Funcs(template.FuncMap{
-		"jsonEscape": func(s string) string {
-			b, _ := json.Marshal(s)
-			return string(b[1 : len(b)-1]) // Remove surrounding quotes
-		},
-	})
+// resolveSpecialParametersOnly resolves only Special Parameters while preserving Go template syntax
+func (w *WebhookNotifier) resolveSpecialParametersOnly(templateStr string, resolver *params.ParameterResolver) string {
+	// Use regex to find Special Parameters but exclude Go template variables
+	// Go template variables start with {{. while Special Parameters don't
+	re := regexp.MustCompile(`\{\{([^.}][^}]*)}}`)
 
-	tmpl, err := tmpl.Parse(w.config.Template)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to parse template: %w", err)
+	result := templateStr
+	matches := re.FindAllStringSubmatchIndex(templateStr, -1)
+
+	// Process matches from right to left to preserve indices
+	for i := len(matches) - 1; i >= 0; i-- {
+		match := matches[i]
+		fullMatchStart, fullMatchEnd := match[0], match[1]
+		paramStart, paramEnd := match[2], match[3]
+
+		// Extract the parameter content
+		param := strings.TrimSpace(templateStr[paramStart:paramEnd])
+
+		// Resolve the Special Parameter
+		resolvedValue := resolver.ResolveParameters("{{" + param + "}}")
+
+		// Replace the match in the result
+		result = result[:fullMatchStart] + resolvedValue + result[fullMatchEnd:]
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, "", fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	// Try to parse as JSON first
-	var jsonData interface{}
-	if err := json.Unmarshal(buf.Bytes(), &jsonData); err == nil {
-		return jsonData, "application/json", nil
-	}
-
-	// Return as string if not valid JSON
-	contentType := "text/plain"
-	if w.config.ContentType != "" {
-		contentType = w.config.ContentType
-	}
-	return buf.String(), contentType, nil
-}
-
-// buildFormattedPayload builds payload using predefined format
-func (w *WebhookNotifier) buildFormattedPayload(data map[string]interface{}) (interface{}, string, error) {
-	switch strings.ToLower(w.config.Format) {
-	case "slack":
-		return w.buildSlackFormat(data), "application/json", nil
-	case "discord":
-		return w.buildDiscordFormat(data), "application/json", nil
-	case "teams":
-		return w.buildTeamsFormat(data), "application/json", nil
-	case "mattermost":
-		return w.buildMattermostFormat(data), "application/json", nil
-	default:
-		return data, "application/json", nil
-	}
-}
-
-// buildSlackFormat builds Slack-compatible payload
-func (w *WebhookNotifier) buildSlackFormat(data map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"text": fmt.Sprintf("*%s*", data["title"]),
-		"attachments": []map[string]interface{}{
-			{
-				"color":     "danger",
-				"text":      data["message"],
-				"timestamp": time.Now().Unix(),
-				"fields": []map[string]interface{}{
-					{
-						"title": "Service",
-						"value": data["service"],
-						"short": true,
-					},
-				},
-			},
-		},
-	}
-}
-
-// buildDiscordFormat builds Discord-compatible payload
-func (w *WebhookNotifier) buildDiscordFormat(data map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"embeds": []map[string]interface{}{
-			{
-				"title":       data["title"],
-				"description": data["message"],
-				"color":       0xFF0000, // Red
-				"timestamp":   data["timestamp"],
-				"fields": []map[string]interface{}{
-					{
-						"name":   "Service",
-						"value":  data["service"],
-						"inline": true,
-					},
-				},
-			},
-		},
-	}
-}
-
-// buildTeamsFormat builds Microsoft Teams-compatible payload
-//
-//goland:noinspection HttpUrlsUsage
-func (w *WebhookNotifier) buildTeamsFormat(data map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"@type":      "MessageCard",
-		"@context":   "http://schema.org/extensions",
-		"themeColor": "FF0000",
-		"summary":    data["title"],
-		"sections": []map[string]interface{}{
-			{
-				"activityTitle": data["title"],
-				"activityText":  data["message"],
-				"facts": []map[string]interface{}{
-					{
-						"name":  "Service",
-						"value": data["service"],
-					},
-					{
-						"name":  "Timestamp",
-						"value": data["timestamp"],
-					},
-				},
-			},
-		},
-	}
-}
-
-// buildMattermostFormat builds Mattermost-compatible payload
-func (w *WebhookNotifier) buildMattermostFormat(data map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"text": fmt.Sprintf("## %s\n\n%s\n\n**Service:** %s\n**Time:** %s",
-			data["title"], data["message"], data["service"], data["timestamp"]),
-	}
+	return result
 }
 
 // setAuthentication sets authentication headers based on configuration
-func (w *WebhookNotifier) setAuthentication(headers map[string]string) {
+func (w *WebhookNotifier) setAuthentication(headers map[string]string, resolver *params.ParameterResolver) {
 	switch strings.ToLower(w.config.AuthType) {
 	case "bearer":
 		if w.config.AuthToken != "" {
-			headers["Authorization"] = "Bearer " + w.config.AuthToken
+			resolvedToken := resolver.ResolveParameters(w.config.AuthToken)
+			headers["Authorization"] = "Bearer " + resolvedToken
 		}
 	case "basic":
 		if w.config.AuthUsername != "" && w.config.AuthPassword != "" {
-			auth := fmt.Sprintf("%s:%s", w.config.AuthUsername, w.config.AuthPassword)
+			resolvedUsername := resolver.ResolveParameters(w.config.AuthUsername)
+			resolvedPassword := resolver.ResolveParameters(w.config.AuthPassword)
+			auth := fmt.Sprintf("%s:%s", resolvedUsername, resolvedPassword)
 			headers["Authorization"] = "Basic " + w.base64Encode(auth)
 		}
 	case "apikey":
 		if w.config.AuthToken != "" {
+			resolvedToken := resolver.ResolveParameters(w.config.AuthToken)
 			if w.config.AuthHeader != "" {
-				headers[w.config.AuthHeader] = w.config.AuthToken
+				resolvedHeader := resolver.ResolveParameters(w.config.AuthHeader)
+				headers[resolvedHeader] = resolvedToken
 			} else {
-				headers["X-API-Key"] = w.config.AuthToken
+				headers["X-API-Key"] = resolvedToken
 			}
 		}
 	}

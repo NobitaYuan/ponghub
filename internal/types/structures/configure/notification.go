@@ -38,8 +38,6 @@ type (
 		URL           string               `yaml:"url,omitempty"`
 		Method        string               `yaml:"method,omitempty"`
 		Headers       map[string]string    `yaml:"headers,omitempty"`
-		Template      string               `yaml:"template,omitempty"`
-		Format        string               `yaml:"format,omitempty"`
 		ContentType   string               `yaml:"content_type,omitempty"`
 		CustomPayload *CustomPayloadConfig `yaml:"custom_payload,omitempty"`
 		AuthType      string               `yaml:"auth_type,omitempty"`

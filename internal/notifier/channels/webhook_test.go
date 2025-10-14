@@ -214,56 +214,6 @@ func TestWebhookNotifier_ErrorHandling(t *testing.T) {
 	}
 }
 
-// TestWebhookNotifier_PresetFormats tests preset format (Slack)
-func TestWebhookNotifier_PresetFormats(t *testing.T) {
-	var receivedPayload map[string]interface{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("Failed to read request body: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		if err := json.Unmarshal(body, &receivedPayload); err != nil {
-			t.Errorf("Failed to parse JSON: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	config := &configure.WebhookConfig{
-		URL:    server.URL,
-		Method: "POST",
-		Format: "slack",
-	}
-
-	notifier := NewWebhookNotifier(config)
-	err := notifier.Send("Service Alert", "Service is down")
-
-	if err != nil {
-		t.Fatalf("Failed to send webhook: %v", err)
-	}
-
-	// Verify Slack format structure
-	if receivedPayload["text"] != "*Service Alert*" {
-		t.Errorf("Expected text '*Service Alert*', got '%v'", receivedPayload["text"])
-	}
-
-	attachments, ok := receivedPayload["attachments"].([]interface{})
-	if !ok || len(attachments) == 0 {
-		t.Fatal("Expected attachments array")
-	}
-
-	attachment := attachments[0].(map[string]interface{})
-	if attachment["text"] != "Service is down" {
-		t.Errorf("Expected attachment text 'Service is down', got '%v'", attachment["text"])
-	}
-}
-
 // TestWebhookNotifier_ConcurrentRequests tests concurrent webhook sending
 func TestWebhookNotifier_ConcurrentRequests(t *testing.T) {
 	var requestCount int64
@@ -321,13 +271,18 @@ func TestWebhookNotifier_RealWorldScenario(t *testing.T) {
 	}
 
 	var receivedAlert AlertPayload
+	var receivedContentType string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Content-Type") != "application/json" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
+		receivedContentType = r.Header.Get("Content-Type")
 
-		if err := json.NewDecoder(r.Body).Decode(&receivedAlert); err != nil {
+		// Debug: log received headers and body
+		body, _ := io.ReadAll(r.Body)
+		t.Logf("Received Content-Type: %s", receivedContentType)
+		t.Logf("Received body: %s", string(body))
+
+		// Parse the JSON body
+		if err := json.Unmarshal(body, &receivedAlert); err != nil {
+			t.Logf("JSON decode error: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -344,11 +299,9 @@ func TestWebhookNotifier_RealWorldScenario(t *testing.T) {
 	config := &configure.WebhookConfig{
 		URL:    server.URL,
 		Method: "POST",
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
 		CustomPayload: &configure.CustomPayloadConfig{
-			Template: `{"alert": "{{.Title}}", "details": "{{.Message}}"}`,
+			Template:    `{"alert": "{{.Title}}", "details": "{{.Message}}"}`,
+			ContentType: "application/json",
 		},
 	}
 
@@ -362,6 +315,11 @@ func TestWebhookNotifier_RealWorldScenario(t *testing.T) {
 		t.Fatalf("Failed to send real-world webhook: %v", err)
 	}
 
+	// Verify that Content-Type was set correctly
+	if receivedContentType != "application/json" {
+		t.Errorf("Expected Content-Type 'application/json', got '%s'", receivedContentType)
+	}
+
 	if receivedAlert.Alert != title {
 		t.Errorf("Expected alert field '%s', got '%s'", title, receivedAlert.Alert)
 	}
@@ -369,4 +327,114 @@ func TestWebhookNotifier_RealWorldScenario(t *testing.T) {
 	if receivedAlert.Details != message {
 		t.Errorf("Expected details field '%s', got '%s'", message, receivedAlert.Details)
 	}
+}
+
+// TestWebhookNotifier_SpecialParametersInCustomPayload tests Special Parameters in custom payload
+func TestWebhookNotifier_SpecialParametersInCustomPayload(t *testing.T) {
+	var receivedPayload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("Failed to read request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if err := json.Unmarshal(body, &receivedPayload); err != nil {
+			t.Errorf("Failed to parse JSON: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &configure.WebhookConfig{
+		URL:    server.URL,
+		Method: "POST",
+		CustomPayload: &configure.CustomPayloadConfig{
+			Template: `{"alert": "{{.Title}}", "details": "{{.Message}}", "request_id": "{{uuid_short}}", "date": "{{%Y-%m-%d}}"}`,
+			Fields: map[string]string{
+				"environment": "test-{{rand(1,100)}}",
+				"session_id":  "{{uuid}}",
+			},
+		},
+	}
+
+	notifier := NewWebhookNotifier(config)
+	err := notifier.Send("Service Down", "Database error")
+
+	if err != nil {
+		t.Fatalf("Failed to send webhook with Special Parameters in custom payload: %v", err)
+	}
+
+	// Debug: print the actual received payload
+	t.Logf("Received payload: %+v", receivedPayload)
+
+	// Verify Special Parameters were resolved in template
+	if _, exists := receivedPayload["request_id"]; !exists {
+		t.Errorf("Expected 'request_id' field from template")
+	}
+	if _, exists := receivedPayload["date"]; !exists {
+		t.Errorf("Expected 'date' field from template")
+	}
+
+	// Verify Special Parameters were resolved in custom fields
+	environment, ok := receivedPayload["environment"].(string)
+	if !ok {
+		t.Errorf("Expected environment to be string, got %T: %v", receivedPayload["environment"], receivedPayload["environment"])
+	} else if environment == "test-{{rand(1,100)}}" {
+		t.Errorf("Special Parameters in environment field were not resolved")
+	}
+
+	sessionId, ok := receivedPayload["session_id"].(string)
+	if !ok {
+		t.Errorf("Expected session_id to be string, got %T: %v", receivedPayload["session_id"], receivedPayload["session_id"])
+	} else if sessionId == "{{uuid}}" {
+		t.Errorf("Special Parameters in session_id field were not resolved")
+	}
+}
+
+// TestWebhookNotifier_SpecialParametersInAuth tests Special Parameters in authentication
+func TestWebhookNotifier_SpecialParametersInAuth(t *testing.T) {
+	var receivedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Set a test environment variable
+	t.Setenv("TEST_TOKEN", "secret-123")
+
+	config := &configure.WebhookConfig{
+		URL:       server.URL,
+		Method:    "POST",
+		AuthType:  "bearer",
+		AuthToken: "{{env(TEST_TOKEN)}}-{{rand(1000,9999)}}",
+	}
+
+	notifier := NewWebhookNotifier(config)
+	err := notifier.Send("Test", "Test message")
+
+	if err != nil {
+		t.Fatalf("Failed to send webhook with Special Parameters in auth: %v", err)
+	}
+
+	// Verify that the token contains the resolved environment variable
+	if receivedAuth == "Bearer {{env(TEST_TOKEN)}}-{{rand(1000,9999)}}" {
+		t.Errorf("Special Parameters in auth token were not resolved")
+	}
+
+	// Should start with "Bearer secret-123-" followed by a random number
+	expectedPrefix := "Bearer secret-123-"
+	if !contains(receivedAuth, expectedPrefix) {
+		t.Errorf("Expected auth token to contain '%s', got '%s'", expectedPrefix, receivedAuth)
+	}
+}
+
+// Helper function to check if string contains substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && s[:len(substr)] == substr
 }
