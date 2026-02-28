@@ -55,12 +55,12 @@ jobs:
           touch publish/.nojekyll
 
       - name: "🚀 Deploy to GitHub Pages"
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          folder: publish
-          single-commit: true
-          git-config-name: github-pages-deploy-action
-          git-config-email: noreply@github.com
+        uses: actions/deploy-pages@v4
+        # with:
+        #   folder: publish
+        #   single-commit: true
+        #   git-config-name: github-pages-deploy-action
+        #   git-config-email: noreply@github.com
 
       - name: "⚠️ Handle Service Notifications"
         run: |
