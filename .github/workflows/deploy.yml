@@ -56,11 +56,11 @@ jobs:
 
       - name: "🚀 Deploy to GitHub Pages"
         uses: actions/deploy-pages@v4
-        # with:
-        #   folder: publish
-        #   single-commit: true
-        #   git-config-name: github-pages-deploy-action
-        #   git-config-email: noreply@github.com
+        with:
+          folder: publish
+          single-commit: true
+          git-config-name: github-pages-deploy-action
+          git-config-email: noreply@github.com
 
       - name: "⚠️ Handle Service Notifications"
         run: |
