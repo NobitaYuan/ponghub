@@ -1,5 +1,5 @@
 services:
-  - name: "My Pages"
+  - name: "Nobita的网站"
     endpoints:
       - url: "https://nobitayuan.cn"
 

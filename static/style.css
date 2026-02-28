@@ -210,6 +210,12 @@ body {
     line-height: 1.5;
     overflow-wrap: break-word;
     hyphens: auto;
+    text-decoration: none;
+    color: var(--primary-color);
+}
+
+.port-url .url-text:hover {
+    text-decoration: underline;
 }
 
 .url-highlight {
