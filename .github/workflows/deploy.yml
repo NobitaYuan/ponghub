@@ -55,7 +55,7 @@ jobs:
           touch publish/.nojekyll
 
       - name: "🚀 Deploy to GitHub Pages"
-        uses: actions/deploy-pages@v4
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: publish
           single-commit: true
